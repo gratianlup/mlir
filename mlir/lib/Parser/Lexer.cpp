@@ -34,6 +34,7 @@ Lexer::Lexer(const llvm::SourceMgr &sourceMgr, MLIRContext *context)
   auto bufferID = sourceMgr.getMainFileID();
   curBuffer = sourceMgr.getMemoryBuffer(bufferID)->getBuffer();
   curPtr = curBuffer.begin();
+  lineNumber = 0;
 }
 
 /// Encode the specified source location information into an attribute for
@@ -75,11 +76,13 @@ Token Lexer::lexToken() {
 
     case ' ':
     case '\t':
-    case '\n':
     case '\r':
       // Handle whitespace.
       continue;
-
+    case '\n':
+      // Ignore whitespace and increment current line number.
+      lineNumber++;
+      continue;
     case '_':
       // Handle bare identifiers.
       return lexBareIdentifierOrKeyword(tokStart);

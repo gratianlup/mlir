@@ -756,6 +756,9 @@ Value OperationParser::createForwardRefPlaceholder(SMLoc loc, Type type) {
 ///
 ParseResult OperationParser::parseOperation() {
   auto loc = getToken().getLoc();
+  unsigned locLine = state.lex.getLineNumber();
+  state.operandLocs_.clear();
+
   SmallVector<ResultRecord, 1> resultIDs;
   size_t numExpectedResults = 0;
   if (getToken().is(Token::percent_identifier)) {
@@ -846,6 +849,64 @@ ParseResult OperationParser::parseOperation() {
     state.asmState->finalizeOperationDefinition(op, nameTok.getLocRange(),
                                                 /*endLoc=*/getToken().getLoc());
   }
+
+  auto endLoc = getToken().getLoc();
+  auto startLocAttr =
+      IntegerAttr::get(IntegerType::get(state.context, 64),
+                       loc.getPointer() - state.lex.getBufferBegin());
+  op->setAttr("irx_start_offset", startLocAttr);
+  auto endLocAttr =
+      IntegerAttr::get(IntegerType::get(state.context, 64),
+                       endLoc.getPointer() - state.lex.getBufferBegin());
+  op->setAttr("irx_end_offset", endLocAttr);
+  auto lineAttr =
+      IntegerAttr::get(IntegerType::get(state.context, 64), locLine);
+  op->setAttr("irx_line", lineAttr);
+
+  if(state.operandLocs_.size() > 0) {
+    SmallVector<Attribute> opLocAttrs;
+
+    for (auto& sourceInfo : state.operandLocs_) {
+      auto opLoc = sourceInfo.second;
+      auto indexAttr = IntegerAttr::get(IntegerType::get(state.context, 64),
+                                           sourceInfo.first);
+      auto startLocAttr =
+          IntegerAttr::get(IntegerType::get(state.context, 64),
+                           opLoc.Start.getPointer() - state.lex.getBufferBegin());
+      auto endLocAttr =
+          IntegerAttr::get(IntegerType::get(state.context, 64),
+                           opLoc.End.getPointer() - state.lex.getBufferBegin());
+      opLocAttrs.push_back(indexAttr);
+      opLocAttrs.push_back(startLocAttr);
+      opLocAttrs.push_back(endLocAttr);
+    }
+
+    auto opLocAttrib = ArrayAttr::get(state.context, opLocAttrs);
+    op->setAttr("irx_ops", opLocAttrib);
+  }
+
+  if (resultIDs.size() > 0) {
+    SmallVector<Attribute> opLocAttrs;
+
+    for (auto &record : resultIDs) {
+      auto opLoc = std::get<2>(record);
+      auto opRange = AsmParserState::convertIdLocToRange(opLoc);
+      auto startLocAttr = IntegerAttr::get(IntegerType::get(state.context, 64),
+                                           opRange.Start.getPointer() -
+                                               state.lex.getBufferBegin());
+      auto endLocAttr =
+          IntegerAttr::get(IntegerType::get(state.context, 64),
+                                         opRange.End.getPointer() -
+                                             state.lex.getBufferBegin());
+      opLocAttrs.push_back(startLocAttr);
+      opLocAttrs.push_back(endLocAttr);
+    }
+
+    auto opLocAttrib = ArrayAttr::get(state.context, opLocAttrs);
+    op->setAttr("irx_results", opLocAttrib);
+  }
+
+  state.operandLocs_.clear();
 
   return success();
 }
@@ -1000,6 +1061,7 @@ Operation *OperationParser::parseGenericOperation() {
   Operation *op = opBuilder.createOperation(result);
   if (parseTrailingLocationSpecifier(op))
     return nullptr;
+  
   return op;
 }
 
@@ -1557,6 +1619,9 @@ public:
     OperationParser::SSAUseInfo operandInfo = {operand.name, operand.number,
                                                operand.location};
     if (auto value = parser.resolveSSAUse(operandInfo, type)) {
+      auto opRange = AsmParserState::convertIdLocToRange(operand.location);
+      parser.state.operandLocs_.push_back(
+          std::make_pair((unsigned)parser.state.operandLocs_.size(), opRange));
       result.push_back(value);
       return success();
     }
@@ -2339,6 +2404,37 @@ ParseResult TopLevelOperationParser::parse(Block *topLevelBlock,
       auto &destOps = topLevelBlock->getOperations();
       destOps.splice(destOps.empty() ? destOps.end() : std::prev(destOps.end()),
                      parsedOps, parsedOps.begin(), parsedOps.end());
+
+      size_t blockDefCount = 0;
+
+      for(auto& blockDef : state.asmState->getBlockDefs()) {
+        blockDefCount++;
+      }
+
+      // Block Count | Block1 | Block1 ArgCount | Arg1 | Arg2... | Block2 | ...
+      SmallVector<Attribute> blockArgs;
+      blockArgs.push_back(IntegerAttr::get(IntegerType::get(state.context, 64),
+                                          blockDefCount));
+
+      for(auto& blockDef : state.asmState->getBlockDefs()) {
+        blockArgs.push_back(IntegerAttr::get(
+            IntegerType::get(state.context, 64), (int64_t)blockDef.block));
+        blockArgs.push_back(IntegerAttr::get(
+            IntegerType::get(state.context, 64), blockDef.arguments.size()));
+        for (auto &blockArg : blockDef.arguments) {
+            blockArgs.push_back(IntegerAttr::get(
+                IntegerType::get(state.context, 64),
+                blockArg.loc.Start.getPointer() - state.lex.getBufferBegin()));
+            blockArgs.push_back(IntegerAttr::get(
+                IntegerType::get(state.context, 64),
+                blockArg.loc.End.getPointer() - state.lex.getBufferBegin()));
+          }
+     }
+
+      for (auto &op : destOps) {
+        op.setAttr("irx_blockargs", ArrayAttr::get(state.context, blockArgs));
+      }
+      
       return success();
     }
 
@@ -2375,6 +2471,11 @@ LogicalResult mlir::parseSourceFile(const llvm::SourceMgr &sourceMgr,
       context, sourceBuf->getBufferIdentifier(), /*line=*/0, /*column=*/0);
   if (sourceFileLoc)
     *sourceFileLoc = parserLoc;
+
+  if (!asmState) {
+    asmState = new AsmParserState();
+  }
+
 
   SymbolState aliasState;
   ParserState state(sourceMgr, context, aliasState, asmState);

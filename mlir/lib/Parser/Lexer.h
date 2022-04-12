@@ -38,6 +38,12 @@ public:
 
   /// Returns the start of the buffer.
   const char *getBufferBegin() { return curBuffer.data(); }
+  unsigned getLineNumber() const { return lineNumber; }
+
+  llvm::SMLoc getCurrentLoc() const {
+    return llvm::SMLoc::getFromPointer(curPtr);
+  }
+
 
 private:
   // Helpers.
@@ -63,6 +69,7 @@ private:
 
   StringRef curBuffer;
   const char *curPtr;
+  unsigned lineNumber;
 
   Lexer(const Lexer &) = delete;
   void operator=(const Lexer &) = delete;

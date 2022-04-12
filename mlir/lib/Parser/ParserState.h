@@ -82,6 +82,9 @@ struct ParserState {
   /// An optional pointer to a struct containing high level parser state to be
   /// populated during parsing.
   AsmParserState *asmState;
+
+  std::vector<std::pair<unsigned, llvm::SMRange>> operandLocs_;
+  std::vector<Operation *> operationStack_;
 };
 
 } // end namespace detail
